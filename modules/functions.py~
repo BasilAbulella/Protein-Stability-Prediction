@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Apr 19 13:51:12 2024
+
+@author: abulellab
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
+#import shap
+import sweetviz as sv
+import netron
+
+from tensorflow.keras import layers
+from sklearn.metrics import roc_curve, auc
+from sklearn.model_selection import train_test_split
+
+def load_and_preprocess_dataset(filename, target_name, scaler):  
+    # Load dataset from file
+    dataset = pd.read_csv(filename, delimiter="\t", header=0)
+
+    # Drop unnecessary columns
+    dataset = dataset.drop(columns=["pdb", "wt", "mut"])
+
+    # Perform one-hot encoding for categorical columns
+    categorical_columns = ["SecStr"]
+    dataset = pd.get_dummies(dataset, columns=categorical_columns)
+
+    # Separate features (features) and target_name variable (target)
+    features = dataset.drop(columns=[target_name])
+    target = dataset[target_name]
+
+    # Apply scaling to features
+    features = pd.DataFrame(scaler.fit_transform(features), columns=features.columns)
+
+    return features, target, dataset
+
+
+def make_model(features, nodes, dropout, activations):  
+    input_dim = features.shape[1]
+
+    # Define a Keras model
+    dataset_model = tf.keras.Sequential(
+        [
+            # Input layer
+            layers.Input(shape=(input_dim,)),  
+            
+            # Hidden layer 1 with Elastic Net regularization
+            layers.Dense(
+                nodes, activation=activations
+            ), 
+            # drop outlayer
+            layers.Dropout(dropout),  
+            # Batch normalization
+            layers.BatchNormalization(),  
+            # Hidden layer 2 with Elastic Net regularization
+            layers.Dense(
+                nodes, activation=activations
+            ),  
+            # Batch normalization
+            layers.BatchNormalization(),  
+            # Hidden layer 3 with Elastic Net regularization
+            layers.Dense(
+                nodes, activation=activations
+            ),  
+            # Output layer
+            layers.Dense(1, activation=activations),  
+        ]
+    )
+
+    return dataset_model
+
+def hyperparameter_make_model(features, hidden_layer, dropout ,node, activation):
+    
+    input_dim = features.shape[1]
+    dataset_model = tf.keras.Sequential()
+    dataset_model.add(layers.Input(shape=(input_dim,)))  # Input layer
+    
+    for _ in range(hidden_layer):
+        dataset_model.add(layers.Dense(node, activation=activation))  # Hidden layers
+        dataset_model.add(layers.Dropout(dropout))  # Dropout layer
+        dataset_model.add(layers.BatchNormalization())  # Batch normalization
+     
+    dataset_model.add(layers.Dense(1, activation='linear'))  # Output layer
+
+    return dataset_model
+
+# setting the learning rate scheduler
+def learning_rate_scheduler(target, batch_sizes, epochs):  
+    steps_per_epoch = len(target) / batch_sizes
+    boundaries = [steps_per_epoch * epochs / 3, steps_per_epoch * epochs / 3 * 2]
+    values = [0.003, 0.001, 0.0001]
+    learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(
+        boundaries, values
+    )
+    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=learning_rate_fn)
+
+    return optimizer
+
+# Compile the model
+def splitting_and_fitting(dataset_model, features, y, epochs, batch_sizes):  
+    # splitting the data in train and test sets
+    X_train, X_val, y_train, y_val = train_test_split(
+        features, y, test_size=0.2, random_state=11
+    )  
+    # Fiting the model, used the splitted data as the validation data
+    # to avoid splitting twice
+    history = dataset_model.fit(
+        X_train,
+        y_train,
+        epochs=epochs,
+        batch_size=batch_sizes,
+        validation_data=(X_val, y_val),
+    )  
+
+    return X_train, X_val, y_train, y_val, history
+
+#evaluates and predics data, and returns data for further evaluation
+def evaluation(dataset_model, X_train, X_val, y_train, y_val, scores, allfolds_training_loss, allfolds_validation_loss ,history):  
+    # calculate loss    
+    loss = dataset_model.evaluate(X_train, y_train)  
+    # append the loss to the loss list
+    scores.append(loss)  
+    
+    # Make predictions on the test data, flatten was done to reduce the 
+    # dimentions so that it is compatible with later functions
+    y_pred_train = dataset_model.predict(
+        X_train
+    ).flatten() 
+
+    # we do the same for the validation set
+    loss_val = dataset_model.evaluate(
+        X_val, y_val
+    )  
+    scores.append(loss_val)
+    y_pred_val = dataset_model.predict(X_val).flatten()
+
+
+    # changing from dataframe to array, in order to be
+    # compatible with the pearson function
+    y_train = (
+        y_train.values
+    )  
+    y_val = y_val.values  # 
+
+    allfolds_training_loss.append(history.history["loss"])
+    allfolds_validation_loss.append(history.history["val_loss"])
+
+    return y_pred_train, y_pred_val, y_train, y_val
+
+#scatterplot for predicted vs actual target values
+def scatterplot(y_pred_train, y_train):
+    plt.scatter(y_pred_train, y_train, alpha=0.5, s=5, label="Actual vs. Predicted")
+    plt.xlabel("Predicted Values")
+    plt.ylabel("Actual Values")
+    plt.title("Scatterplot of Predicted vs. Actual Values")
+
+    # Fit a linear regression trend line
+    z = np.polyfit(y_pred_train, y_train, 1)
+    p = np.poly1d(z)
+    plt.plot(
+        y_pred_train,
+        p(y_pred_train),
+        color="black",
+        label=f"Trend line: {z[0]:.2f}x + {z[1]:.2f}",
+    )
+
+    plt.legend()
+    plt.show()
+    return
+
+# Reciever operating characteristic (ROC) plot
+def ROC_plot(y_actualall_train, y_predall_train):
+    # convert the y_pred and y_test to 0s and 1s
+    y_test_binary = (np.array(y_actualall_train) > 0).astype(int)
+
+    # Assuming y_pred _binary and y_test_binary are now binary
+    fpr, tpr, _ = roc_curve(y_test_binary, y_predall_train)
+    roc_auc = auc(fpr, tpr)
+
+    # Plot ROC curve
+    plt.figure(figsize=(8, 6))
+    plt.plot(
+        fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.2f})"
+    )
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--", label="Random")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Receiver Operating Characteristic (ROC) Curve")
+    plt.legend(loc="lower right")
+    plt.show()
+    return
+
+#plots a graph showing loss vs val_loss to visualize underfitting and overfitting.
+def fitting_curve(
+    history,
+):  
+    # overfitting & underfitting visualization over epochs
+    plt.plot(history.history["loss"], label="Training Loss")
+    plt.plot(history.history["val_loss"], label="Validation set Loss")
+
+    plt.legend()
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss Over Epochs")
+    plt.show()
+    return
+
+# plots a graph that contains all n_folds together
+def cross_validation_graph(n_folds, allfolds_training_loss, allfolds_validation_loss, best_epoch_all):
+    plt.figure(figsize=(12, 6))
+    for i in range(n_folds):
+        plt.plot(
+            np.arange(len(allfolds_training_loss[i]))
+            + i * len(allfolds_training_loss[i]),
+            allfolds_training_loss[i],
+            label=f"Training Loss - Fold {i + 1}",
+            color="#1f77b4",
+        )
+        plt.plot(
+            np.arange(len(allfolds_validation_loss[i]))
+            + i * len(allfolds_validation_loss[i]),
+            allfolds_validation_loss[i],
+            label=f"Validation Loss - Fold {i + 1}",
+            color="#ff7f0e",
+        )
+
+        # Get the best epoch for this fold
+        best_epoch = best_epoch_all[i]
+        # Calculate x-coordinate of the vertical line for best_epoch for this fold
+        best_epoch_x = i * len(allfolds_training_loss[i]) + best_epoch
+        # Plot vertical line for best_epoch for this fold
+        plt.axvline(
+            x=best_epoch_x,
+            color="red",
+            linestyle="--",
+            label=f"Best Epoch - Fold {i + 1}: {best_epoch}",
+        )
+
+    plt.legend().remove()
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss Over Epochs for Each Fold")
+    plt.show()
+    return
+
+#graph for all combined n_folds without the best epoch
+def cross_validation_graph_all(n_folds, allfolds_training_loss, allfolds_validation_loss):
+    plt.figure(figsize=(12, 6))
+    for i in range(n_folds):
+        plt.plot(
+            np.arange(len(allfolds_training_loss[i]))
+            + i * len(allfolds_training_loss[i]),
+            allfolds_training_loss[i],
+            label=f"Training Loss - Fold {i + 1}",
+            color="#1f77b4",
+        )
+        plt.plot(
+            np.arange(len(allfolds_validation_loss[i]))
+            + i * len(allfolds_validation_loss[i]),
+            allfolds_validation_loss[i],
+            label=f"Validation Loss - Fold {i + 1}",
+            color="#ff7f0e",
+        )
+
+    plt.legend().remove()
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss Over Epochs for Each Fold")
+    plt.show()
+    return
+
+# SHAP (SHapley Additive exPlanations)
+def shap_plot(dataset_model, X_train, X_val):
+    model_func = tf.function(
+        dataset_model
+    )  
+    # Convert the TensorFlow model's predict method to a callable TensorFlow function
+    # Create a DeepExplainer object
+    explainer = shap.Explainer(model_func, X_train) 
+    # Compute SHAP values
+    shap_values = explainer.shap_values(X_val)  
+    # Visualize the SHAP values
+    shap.summary_plot(shap_values, X_val)  
+    return
+
+# returns the epoch number at which the lowest loss was recorded
+def get_best_epochs(history):
+    best_epoch = np.argmin(history.history["loss"])
+    best_val_epoch = np.argmin(history.history["val_loss"])
+    return best_epoch, best_val_epoch
+
+# sweetviz report for the dataset
+def sweetviz_report(dataset, saving_dir, file_name):
+    dataset_report = sv.analyze(dataset)
+    # Save the report as an HTML file
+    dataset_report.show_html(saving_dir + file_name + "_sweetviz_report.html")             
+    return
+
+# netron is a nice network visualizer
+def netron_visualizer(dataset_model, saving_dir, file_name):  
+    model_path = (saving_dir + file_name + "_netron_visualizer.h5")
+    dataset_model.save(model_path)
+    netron.start(model_path)
+    return
+
+def iqr_outlier_removal(data, protein_names):
+    # Calculate the first quartile (Q1)
+    Q1 = np.percentile(data, 25)
+    
+    # Calculate the third quartile (Q3)
+    Q3 = np.percentile(data, 75)
+    
+    # Calculate the interquartile range (IQR)
+    IQR = Q3 - Q1
+    
+    # Define the lower and upper bounds to identify outliers
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    
+    # Identify outliers
+    outliers = (data < lower_bound) | (data > upper_bound)
+    
+    # Remove outliers
+    cleaned_data = data[~outliers]
+    
+    # Create a boolean array to track removed data
+    removed_positions = np.where(outliers)[0]
+    
+    # Get the names of removed proteins
+    removed_proteins = [protein_names[pos] for pos in removed_positions]
+    
+    return cleaned_data, removed_positions, removed_proteins
+
+
+def load_protein_names(filepath, filename):  
+    # Load dataset from file
+    dataset = pd.read_csv(filepath + filename, delimiter="\t", header=0)
+
+    # Drop unnecessary columns
+    protein_names = dataset["pdb"]
+
+    return protein_names
+
+def calculate_median_per_datapoint(list_of_arrays):
+    # Function to calculate median for each position across multiple arrays
+    median_per_datapoint = []
+    # Iterate over each position
+    for i in range(len(list_of_arrays[0])):
+        # Extract values at position i from all arrays
+        values_at_position = [arr[i] for arr in list_of_arrays]
+        # Calculate the median for values at position i
+        median_at_position = np.median(values_at_position)
+        # Append the median to the list
+        median_per_datapoint.append(median_at_position)
+
+    # Convert the list to a numpy array
+    return np.array(median_per_datapoint)

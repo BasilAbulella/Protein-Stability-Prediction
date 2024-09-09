@@ -1,0 +1,14 @@
+nohup python3 main_script.py SP1_features.tsv ddGexp power 5 > /dev/null &
+nohup python3 main_script.py SP1_features.tsv ddGexp standard 5 > /dev/null &
+nohup python3 main_script.py SP1_features.tsv ddGexp robust 5 > /dev/null &
+nohup python3 main_script.py SP1_features.tsv ddGexp minmax 5 > /dev/null &
+
+nohup python3 main_script.py SP3_features.tsv ddGexp power 5 > /dev/null &
+nohup python3 main_script.py SP3_features.tsv ddGexp standard 5 > /dev/null &
+nohup python3 main_script.py SP3_features.tsv ddGexp robust 5 > /dev/null &
+nohup python3 main_script.py SP3_features.tsv ddGexp minmax 5 > /dev/null &
+
+nohup python3 main_script.py SP4_features.tsv ddGexp power 5 > /dev/null &
+nohup python3 main_script.py SP4_features.tsv ddGexp standard 5 > /dev/null &
+nohup python3 main_script.py SP4_features.tsv ddGexp robust 5 > /dev/null &
+nohup python3 main_script.py SP4_features.tsv ddGexp minmax 5 > /dev/null &
